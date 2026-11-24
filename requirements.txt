@@ -1,0 +1,9 @@
+pybullet>=3.2.6
+numpy>=1.26
+gymnasium>=1.0
+stable-baselines3>=2.3
+torch>=2.2
+tensorboard>=2.15
+
+# Versions used for the saved models: pybullet 3.2.7, numpy 2.4.2, gymnasium 1.2.3,
+# stable-baselines3 2.7.1, torch 2.10.0 (CPU), tensorboard 2.20.0, Python 3.12
