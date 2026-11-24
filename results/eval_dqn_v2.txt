@@ -1,0 +1,2 @@
+[DQN reach] dqn_panda_discrete.zip, 50 episodes, deterministic: success 7/50 (14 %), collision 0/50, timeout 43/50, mean steps 174.7 (successful episodes: 19.6), median final distance 6.0 cm
+[DQN reach] dqn_panda_discrete.zip, 50 episodes, stochastic: success 30/50 (60 %), collision 0/50, timeout 20/50, mean steps 128.9 (successful episodes: 81.4), median final distance 3.4 cm

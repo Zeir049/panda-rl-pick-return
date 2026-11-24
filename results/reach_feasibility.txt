@@ -1,0 +1,2 @@
+[greedy scripted reach] link panda_hand, 50 episodes: success 0/50, collision 2/50, median final distance 6.6 cm, median |IK target - measured end-effector| at episode end 6.8 cm
+[greedy scripted reach] link panda_grasptarget, 50 episodes: success 31/50, collision 1/50, median final distance 3.4 cm, median |IK target - measured end-effector| at episode end 3.8 cm

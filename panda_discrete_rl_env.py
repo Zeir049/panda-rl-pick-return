@@ -137,7 +137,10 @@ class PandaDiscreteReachEnv(gym.Env):
         robot_base_pos = [0.35, 0.0, self.table_top_z + 0.001]
         self.robot = self._p.loadURDF("franka_panda/panda.urdf", robot_base_pos, useFixedBase=True)
 
-        self.eef_link = find_link_index(self.robot, "panda_hand", pb=self._p)
+        # v2: IK 목표 링크 겸 측정점을 panda_grasptarget(TCP, 손가락 끝 사이)으로 변경.
+        # v0/v1에서는 panda_hand를 썼는데, getLinkState()[0]은 링크 프레임이 아니라 질량중심(COM)이라
+        # IK가 맞춘 점과 측정한 점이 수 cm 어긋나 success 반경(3.5 cm)에 들어갈 수 없었음.
+        self.eef_link = find_link_index(self.robot, "panda_grasptarget", pb=self._p)
         self.joint_damping = [0.06] * self._p.getNumJoints(self.robot)
 
         # 장애물 3개 (테이블 위)
