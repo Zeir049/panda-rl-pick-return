@@ -1,0 +1,2 @@
+[DQN reach] checkpoints/dqn_panda_discrete_v0.zip, 50 episodes: success 0/50 (0 %), collision 0/50, timeout 50/50, mean steps 200.0 (successful episodes: -), median final distance 29.5 cm
+[PPO pick-return] checkpoints/ppo_panda_pick_return_v0.zip, 50 episodes (ever during episode): grasped 0/50, lifted 0/50, collided 0/50, success 0/50, mean steps 250.0 (successful episodes: -), mean final home error 2.58 rad

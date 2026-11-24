@@ -1,0 +1,1 @@
+[DQN reach] checkpoints/dqn_panda_discrete_v1_500k.zip, 50 episodes: success 0/50 (0 %), collision 2/50, timeout 48/50, mean steps 193.5 (successful episodes: -), median final distance 7.0 cm

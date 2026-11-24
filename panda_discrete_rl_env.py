@@ -3,36 +3,37 @@ import time
 import numpy as np
 
 import pybullet as p
+from pybullet_utils import bullet_client as bc
 import pybullet_data
 
 import gymnasium as gym
 from gymnasium import spaces
 
 
-def find_link_index(body_id: int, name_contains: str) -> int:
-    n = p.getNumJoints(body_id)
+def find_link_index(body_id: int, name_contains: str, pb=p) -> int:
+    n = pb.getNumJoints(body_id)
     for i in range(n):
-        info = p.getJointInfo(body_id, i)
+        info = pb.getJointInfo(body_id, i)
         link_name = info[12].decode("utf-8")
         if name_contains in link_name:
             return i
     return n - 1
 
 
-def get_body_top_z(body_id: int) -> float:
+def get_body_top_z(body_id: int, pb=p) -> float:
     top_z = -1e9
-    aabb_min, aabb_max = p.getAABB(body_id, -1)
+    aabb_min, aabb_max = pb.getAABB(body_id, -1)
     top_z = max(top_z, aabb_max[2])
-    for link in range(p.getNumJoints(body_id)):
-        aabb_min, aabb_max = p.getAABB(body_id, link)
+    for link in range(pb.getNumJoints(body_id)):
+        aabb_min, aabb_max = pb.getAABB(body_id, link)
         top_z = max(top_z, aabb_max[2])
     return top_z
 
 
-def make_box(half_extents, pos, rgba=(0.7, 0.7, 0.7, 1.0)):
-    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents)
-    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half_extents, rgbaColor=rgba)
-    body = p.createMultiBody(
+def make_box(half_extents, pos, rgba=(0.7, 0.7, 0.7, 1.0), pb=p):
+    col = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=half_extents)
+    vis = pb.createVisualShape(pb.GEOM_BOX, halfExtents=half_extents, rgbaColor=rgba)
+    body = pb.createMultiBody(
         baseMass=0,
         baseCollisionShapeIndex=col,
         baseVisualShapeIndex=vis,
@@ -105,37 +106,39 @@ class PandaDiscreteReachEnv(gym.Env):
 
     def _connect_and_build(self):
         if self.render_mode == "human":
-            self.cid = p.connect(p.GUI)
-            p.resetDebugVisualizerCamera(
+            self._p = bc.BulletClient(connection_mode=p.GUI)
+            self.cid = self._p._client
+            self._p.resetDebugVisualizerCamera(
                 cameraDistance=1.5,
                 cameraYaw=55,
                 cameraPitch=-35,
                 cameraTargetPosition=[0.55, 0.0, 0.75],
             )
         else:
-            self.cid = p.connect(p.DIRECT)
+            self._p = bc.BulletClient(connection_mode=p.DIRECT)
+            self.cid = self._p._client
 
         if self.cid < 0:
             raise RuntimeError("PyBullet connect 실패")
 
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.81)
-        p.setTimeStep(1 / 240)
-        p.setRealTimeSimulation(0)
-        p.setPhysicsEngineParameter(numSolverIterations=200, fixedTimeStep=1 / 240)
+        self._p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        self._p.resetSimulation()
+        self._p.setGravity(0, 0, -9.81)
+        self._p.setTimeStep(1 / 240)
+        self._p.setRealTimeSimulation(0)
+        self._p.setPhysicsEngineParameter(numSolverIterations=200, fixedTimeStep=1 / 240)
 
         # 기본 월드
-        p.loadURDF("plane.urdf")
-        self.table_id = p.loadURDF("table/table.urdf", [0.5, 0.0, 0.0], useFixedBase=True)
-        self.table_top_z = get_body_top_z(self.table_id)
+        self._p.loadURDF("plane.urdf")
+        self.table_id = self._p.loadURDF("table/table.urdf", [0.5, 0.0, 0.0], useFixedBase=True)
+        self.table_top_z = get_body_top_z(self.table_id, pb=self._p)
 
         # 로봇을 테이블 위에 설치
         robot_base_pos = [0.35, 0.0, self.table_top_z + 0.001]
-        self.robot = p.loadURDF("franka_panda/panda.urdf", robot_base_pos, useFixedBase=True)
+        self.robot = self._p.loadURDF("franka_panda/panda.urdf", robot_base_pos, useFixedBase=True)
 
-        self.eef_link = find_link_index(self.robot, "panda_hand")
-        self.joint_damping = [0.06] * p.getNumJoints(self.robot)
+        self.eef_link = find_link_index(self.robot, "panda_hand", pb=self._p)
+        self.joint_damping = [0.06] * self._p.getNumJoints(self.robot)
 
         # 장애물 3개 (테이블 위)
         self.obstacle_ids.clear()
@@ -149,7 +152,7 @@ class PandaDiscreteReachEnv(gym.Env):
         margin = 0.08  # 회피/샘플링 여유
 
         for he, pos, color in box_specs:
-            oid = make_box(he, pos, rgba=color)
+            oid = make_box(he, pos, rgba=color, pb=self._p)
             self.obstacle_ids.append(oid)
             he_v = np.array(he, dtype=float)
             pos_v = np.array(pos, dtype=float)
@@ -158,12 +161,12 @@ class PandaDiscreteReachEnv(gym.Env):
 
         # 목표/디자이어드 구체(시각화)
         r = 0.025
-        col_s = p.createCollisionShape(p.GEOM_SPHERE, radius=r)
-        goal_vis = p.createVisualShape(p.GEOM_SPHERE, radius=r, rgbaColor=[0.2, 1.0, 0.2, 1])     # 초록(Goal)
-        des_vis  = p.createVisualShape(p.GEOM_SPHERE, radius=r, rgbaColor=[0.2, 0.6, 1.0, 1])     # 파랑(Desired)
+        col_s = self._p.createCollisionShape(self._p.GEOM_SPHERE, radius=r)
+        goal_vis = self._p.createVisualShape(self._p.GEOM_SPHERE, radius=r, rgbaColor=[0.2, 1.0, 0.2, 1])     # 초록(Goal)
+        des_vis  = self._p.createVisualShape(self._p.GEOM_SPHERE, radius=r, rgbaColor=[0.2, 0.6, 1.0, 1])     # 파랑(Desired)
 
-        self.goal_id = p.createMultiBody(0, col_s, goal_vis, [0.7, 0.0, self.table_top_z + 0.25])
-        self.desired_id = p.createMultiBody(0, col_s, des_vis, [0.6, 0.0, self.table_top_z + 0.25])
+        self.goal_id = self._p.createMultiBody(0, col_s, goal_vis, [0.7, 0.0, self.table_top_z + 0.25])
+        self.desired_id = self._p.createMultiBody(0, col_s, des_vis, [0.6, 0.0, self.table_top_z + 0.25])
 
         # 작업공간 bounds (테이블 위)
         x_min, x_max = 0.35, 0.90
@@ -172,7 +175,7 @@ class PandaDiscreteReachEnv(gym.Env):
         self.bounds = (x_min, x_max, y_min, y_max, z_min, z_max)
 
     def _eef_pos(self) -> np.ndarray:
-        ls = p.getLinkState(self.robot, self.eef_link, computeForwardKinematics=True)
+        ls = self._p.getLinkState(self.robot, self.eef_link, computeForwardKinematics=True)
         return np.array(ls[0], dtype=float)
 
     def _clamp_to_bounds(self, pos: np.ndarray) -> np.ndarray:
@@ -205,11 +208,11 @@ class PandaDiscreteReachEnv(gym.Env):
         # 접촉(contact) 기준
         for oid in self.obstacle_ids:
             if self.collision_dist <= 0.0:
-                pts = p.getContactPoints(bodyA=self.robot, bodyB=oid)
+                pts = self._p.getContactPoints(bodyA=self.robot, bodyB=oid)
                 if pts:
                     return True
             else:
-                pts = p.getClosestPoints(bodyA=self.robot, bodyB=oid, distance=self.collision_dist)
+                pts = self._p.getClosestPoints(bodyA=self.robot, bodyB=oid, distance=self.collision_dist)
                 if pts:
                     return True
         return False
@@ -234,20 +237,20 @@ class PandaDiscreteReachEnv(gym.Env):
         # 홈 포즈로 리셋
         home_q = [0.0, -0.6, 0.0, -2.0, 0.0, 1.6, 0.8]
         for j, qv in zip(self.arm_joints, home_q):
-            p.resetJointState(self.robot, j, qv)
+            self._p.resetJointState(self.robot, j, qv)
 
         # 한 번 시뮬 진행해서 FK 안정화
         for _ in range(10):
-            p.stepSimulation()
+            self._p.stepSimulation()
 
         # goal 샘플링(장애물 근처 피함)
         self.goal_pos = self._sample_pos_away_from_obstacles()
-        p.resetBasePositionAndOrientation(self.goal_id, self.goal_pos.tolist(), [0, 0, 0, 1])
+        self._p.resetBasePositionAndOrientation(self.goal_id, self.goal_pos.tolist(), [0, 0, 0, 1])
 
         # desired는 현재 eef 근처에서 시작
         eef = self._eef_pos()
         self.desired_pos = self._clamp_to_bounds(eef.copy())
-        p.resetBasePositionAndOrientation(self.desired_id, self.desired_pos.tolist(), [0, 0, 0, 1])
+        self._p.resetBasePositionAndOrientation(self.desired_id, self.desired_pos.tolist(), [0, 0, 0, 1])
 
         info = {"distance": float(np.linalg.norm(self._eef_pos() - self.goal_pos))}
         return self._obs(), info
@@ -274,11 +277,11 @@ class PandaDiscreteReachEnv(gym.Env):
             self.desired_pos -= dz
 
         self.desired_pos = self._clamp_to_bounds(self.desired_pos)
-        p.resetBasePositionAndOrientation(self.desired_id, self.desired_pos.tolist(), [0, 0, 0, 1])
+        self._p.resetBasePositionAndOrientation(self.desired_id, self.desired_pos.tolist(), [0, 0, 0, 1])
 
         # IK로 desired_pos로 이동
-        target_orn = p.getQuaternionFromEuler([np.pi, 0, 0])
-        q = p.calculateInverseKinematics(
+        target_orn = self._p.getQuaternionFromEuler([np.pi, 0, 0])
+        q = self._p.calculateInverseKinematics(
             self.robot,
             self.eef_link,
             self.desired_pos.tolist(),
@@ -289,10 +292,10 @@ class PandaDiscreteReachEnv(gym.Env):
         )
 
         for j in self.arm_joints:
-            p.setJointMotorControl2(
+            self._p.setJointMotorControl2(
                 self.robot,
                 j,
-                p.POSITION_CONTROL,
+                self._p.POSITION_CONTROL,
                 targetPosition=q[j],
                 force=35,
                 maxVelocity=0.9,
@@ -300,7 +303,7 @@ class PandaDiscreteReachEnv(gym.Env):
 
         # 실제 이동이 따라오도록 substeps만큼 시뮬
         for _ in range(self.substeps):
-            p.stepSimulation()
+            self._p.stepSimulation()
             if self.render_mode == "human":
                 time.sleep(1 / 240)
 
@@ -340,7 +343,7 @@ class PandaDiscreteReachEnv(gym.Env):
     def close(self):
         try:
             if self.cid is not None:
-                p.disconnect(self.cid)
+                self._p.disconnect()
         except Exception:
             pass
         self.cid = None
@@ -354,9 +357,8 @@ def train_dqn(model_path="dqn_panda_discrete.zip", total_timesteps=50_000):
     def env_fn():
         return PandaDiscreteReachEnv(render_mode="none", seed=0)
 
-    # NOTE (known issue): 이 env는 pybullet을 physicsClientId 없이 호출하므로 모든 인스턴스가
-    # client 0을 공유한다. n_envs=4(DummyVecEnv)이면 4개 env가 하나의 로봇/월드를 번갈아 조작한다.
-    # 저장된 dqn_panda_discrete.zip은 이 설정으로 학습되었다. README의 Known issues 참고.
+    # v1: 각 env가 자기 BulletClient(physics client)를 가지므로 4개 env가 서로 독립된 시뮬레이션을 돌린다.
+    # (v0에서는 모든 인스턴스가 client 0을 공유해 하나의 로봇/월드를 번갈아 조작했음)
     vec_env = make_vec_env(env_fn, n_envs=4)
 
     model = DQN(
@@ -374,7 +376,8 @@ def train_dqn(model_path="dqn_panda_discrete.zip", total_timesteps=50_000):
         tensorboard_log="./tb_logs",
     )
 
-    model.learn(total_timesteps=total_timesteps)
+    tb_name = os.path.splitext(os.path.basename(model_path))[0]
+    model.learn(total_timesteps=total_timesteps, tb_log_name=tb_name)
     model.save(model_path)
     vec_env.close()
     print("Saved:", model_path)

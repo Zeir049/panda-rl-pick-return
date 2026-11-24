@@ -1,0 +1,2 @@
+[PPO pick-return] ppo_panda_pick_return.zip, 50 episodes, deterministic (ever during episode): grasped 0/50, lifted 0/50, collided 50/50, success 0/50, mean steps 250.0 (successful episodes: -), mean final home error 5.42 rad
+[PPO pick-return] ppo_panda_pick_return.zip, 50 episodes, stochastic (ever during episode): grasped 25/50, lifted 25/50, collided 42/50, success 0/50, mean steps 250.0 (successful episodes: -), mean final home error 5.68 rad

@@ -1,0 +1,4 @@
+panda_hand getLinkState()[0] (centre of mass): 4.0 cm from its link frame, 6.5 cm from the TCP (panda_grasptarget frame); panda_grasptarget COM vs frame: 0.0 cm
+yaw   0 deg: TCP-cube  9.9 cm, env grasp distance  9.9 cm (threshold 4.5) | grasped False, lifted False, success False at step 153
+yaw  45 deg: TCP-cube 12.6 cm, env grasp distance 12.6 cm (threshold 4.5) | grasped False, lifted False, success False at step 153
+yaw  90 deg: TCP-cube  0.7 cm, env grasp distance  0.7 cm (threshold 4.5) | grasped True, lifted True, success True at step 112

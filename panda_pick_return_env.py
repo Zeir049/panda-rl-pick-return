@@ -4,45 +4,46 @@ import argparse
 import numpy as np
 
 import pybullet as p
+from pybullet_utils import bullet_client as bc
 import pybullet_data
 
 import gymnasium as gym
 from gymnasium import spaces
 
 
-def find_joint_index(body_id: int, name_contains: str):
-    for i in range(p.getNumJoints(body_id)):
-        info = p.getJointInfo(body_id, i)
+def find_joint_index(body_id: int, name_contains: str, pb=p):
+    for i in range(pb.getNumJoints(body_id)):
+        info = pb.getJointInfo(body_id, i)
         jname = info[1].decode("utf-8")
         if name_contains in jname:
             return i
     return None
 
 
-def find_link_index(body_id: int, name_contains: str) -> int:
-    n = p.getNumJoints(body_id)
+def find_link_index(body_id: int, name_contains: str, pb=p) -> int:
+    n = pb.getNumJoints(body_id)
     for i in range(n):
-        info = p.getJointInfo(body_id, i)
+        info = pb.getJointInfo(body_id, i)
         link_name = info[12].decode("utf-8")
         if name_contains in link_name:
             return i
     return n - 1
 
 
-def get_body_top_z(body_id: int) -> float:
+def get_body_top_z(body_id: int, pb=p) -> float:
     top_z = -1e9
-    aabb_min, aabb_max = p.getAABB(body_id, -1)
+    aabb_min, aabb_max = pb.getAABB(body_id, -1)
     top_z = max(top_z, aabb_max[2])
-    for link in range(p.getNumJoints(body_id)):
-        aabb_min, aabb_max = p.getAABB(body_id, link)
+    for link in range(pb.getNumJoints(body_id)):
+        aabb_min, aabb_max = pb.getAABB(body_id, link)
         top_z = max(top_z, aabb_max[2])
     return top_z
 
 
-def make_box(half_extents, pos, rgba=(0.7, 0.7, 0.7, 1.0)):
-    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents)
-    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half_extents, rgbaColor=rgba)
-    body = p.createMultiBody(
+def make_box(half_extents, pos, rgba=(0.7, 0.7, 0.7, 1.0), pb=p):
+    col = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=half_extents)
+    vis = pb.createVisualShape(pb.GEOM_BOX, halfExtents=half_extents, rgbaColor=rgba)
+    body = pb.createMultiBody(
         baseMass=0,
         baseCollisionShapeIndex=col,
         baseVisualShapeIndex=vis,
@@ -121,47 +122,52 @@ class PandaPickReturnEnv(gym.Env):
 
     def _build(self):
         if self.render_mode == "human":
-            self.cid = p.connect(p.GUI)
-            p.resetDebugVisualizerCamera(
+            self._p = bc.BulletClient(connection_mode=p.GUI)
+            self.cid = self._p._client
+            self._p.resetDebugVisualizerCamera(
                 cameraDistance=1.5,
                 cameraYaw=55,
                 cameraPitch=-35,
                 cameraTargetPosition=[0.55, 0.0, 0.75],
             )
         else:
-            self.cid = p.connect(p.DIRECT)
+            self._p = bc.BulletClient(connection_mode=p.DIRECT)
+            self.cid = self._p._client
 
         if self.cid < 0:
             raise RuntimeError("PyBullet connect 실패")
 
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.81)
-        p.setTimeStep(1 / 240)
-        p.setRealTimeSimulation(0)
-        p.setPhysicsEngineParameter(numSolverIterations=200, fixedTimeStep=1 / 240)
+        self._p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        self._p.resetSimulation()
+        self._p.setGravity(0, 0, -9.81)
+        self._p.setTimeStep(1 / 240)
+        self._p.setRealTimeSimulation(0)
+        self._p.setPhysicsEngineParameter(numSolverIterations=200, fixedTimeStep=1 / 240)
 
-        p.loadURDF("plane.urdf")
-        self.table_id = p.loadURDF("table/table.urdf", [0.5, 0.0, 0.0], useFixedBase=True)
-        self.table_top_z = get_body_top_z(self.table_id)
+        self._p.loadURDF("plane.urdf")
+        self.table_id = self._p.loadURDF("table/table.urdf", [0.5, 0.0, 0.0], useFixedBase=True)
+        self.table_top_z = get_body_top_z(self.table_id, pb=self._p)
 
         # 로봇을 테이블 위에 올림
         robot_base_pos = [0.35, 0.0, self.table_top_z + 0.001]
-        self.robot = p.loadURDF("franka_panda/panda.urdf", robot_base_pos, useFixedBase=True)
+        self.robot = self._p.loadURDF("franka_panda/panda.urdf", robot_base_pos, useFixedBase=True)
 
-        self.eef_link = find_link_index(self.robot, "panda_hand")
+        # v1: end-effector 기준점을 panda_hand(손목, 손가락 끝보다 ~10 cm 위)에서
+        # panda_grasptarget(두 손가락 끝 사이, TCP)으로 변경. 관측/보상/grasp 판정 모두 이 점을 사용.
+        # v0에서는 panda_hand 기준이라 손가락이 물체/테이블에 먼저 닿아 grasp 조건(4.5 cm)을 만족할 수 없었음.
+        self.eef_link = find_link_index(self.robot, "panda_grasptarget", pb=self._p)
 
         # finger joint 찾기(이름 기반)
-        self.finger_j1 = find_joint_index(self.robot, "finger_joint1")
-        self.finger_j2 = find_joint_index(self.robot, "finger_joint2")
+        self.finger_j1 = find_joint_index(self.robot, "finger_joint1", pb=self._p)
+        self.finger_j2 = find_joint_index(self.robot, "finger_joint2", pb=self._p)
         if self.finger_j1 is None or self.finger_j2 is None:
             # 일부 버전에서 이름이 다를 수 있어 fallback (보통 9,10 근처)
             # 그래도 최소한 학습이 돌게 마지막 두 개 prismatic을 찾는 방식
             candidates = []
-            for i in range(p.getNumJoints(self.robot)):
-                info = p.getJointInfo(self.robot, i)
+            for i in range(self._p.getNumJoints(self.robot)):
+                info = self._p.getJointInfo(self.robot, i)
                 jtype = info[2]
-                if jtype == p.JOINT_PRISMATIC:
+                if jtype == self._p.JOINT_PRISMATIC:
                     candidates.append(i)
             if len(candidates) >= 2:
                 self.finger_j1, self.finger_j2 = candidates[-2], candidates[-1]
@@ -176,48 +182,48 @@ class PandaPickReturnEnv(gym.Env):
         box2_pos = [0.72, -0.12, self.table_top_z + box2_he[2]]
         box3_pos = [0.52, -0.22, self.table_top_z + box3_he[2]]
 
-        self.obstacle_ids.append(make_box(box1_he, box1_pos, rgba=(0.8, 0.8, 0.2, 1)))
-        self.obstacle_ids.append(make_box(box2_he, box2_pos, rgba=(0.2, 0.8, 0.8, 1)))
-        self.obstacle_ids.append(make_box(box3_he, box3_pos, rgba=(0.9, 0.4, 0.4, 1)))
+        self.obstacle_ids.append(make_box(box1_he, box1_pos, rgba=(0.8, 0.8, 0.2, 1), pb=self._p))
+        self.obstacle_ids.append(make_box(box2_he, box2_pos, rgba=(0.2, 0.8, 0.8, 1), pb=self._p))
+        self.obstacle_ids.append(make_box(box3_he, box3_pos, rgba=(0.9, 0.4, 0.4, 1), pb=self._p))
 
         # ✅ 초록 물체(집을 대상) : 장애물(box1) 근처에 "고정 위치"로 배치
         # 박스1 옆으로 아주 가깝게 둠(너 요청)
         obj_size = 0.03
-        obj_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[obj_size, obj_size, obj_size])
-        obj_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[obj_size, obj_size, obj_size], rgbaColor=[0.2, 1.0, 0.2, 1])
+        obj_col = self._p.createCollisionShape(self._p.GEOM_BOX, halfExtents=[obj_size, obj_size, obj_size])
+        obj_vis = self._p.createVisualShape(self._p.GEOM_BOX, halfExtents=[obj_size, obj_size, obj_size], rgbaColor=[0.2, 1.0, 0.2, 1])
 
         # box1_pos 근처 고정(약간 옆/앞)
         obj_pos = [0.62, 0.10, self.table_top_z + obj_size]  # 장애물 쪽에 붙여둠
-        self.obj_id = p.createMultiBody(
+        self.obj_id = self._p.createMultiBody(
             baseMass=0.05,  # 물리적으로 들어올릴 수 있게
             baseCollisionShapeIndex=obj_col,
             baseVisualShapeIndex=obj_vis,
             basePosition=obj_pos
         )
-        p.changeDynamics(self.obj_id, -1, lateralFriction=1.2, spinningFriction=0.01, rollingFriction=0.01)
+        self._p.changeDynamics(self.obj_id, -1, lateralFriction=1.2, spinningFriction=0.01, rollingFriction=0.01)
 
     def _eef_pos(self):
-        ls = p.getLinkState(self.robot, self.eef_link, computeForwardKinematics=True)
+        ls = self._p.getLinkState(self.robot, self.eef_link, computeForwardKinematics=True)
         return np.array(ls[0], dtype=float)
 
     def _obj_pos(self):
-        pos, orn = p.getBasePositionAndOrientation(self.obj_id)
+        pos, orn = self._p.getBasePositionAndOrientation(self.obj_id)
         return np.array(pos, dtype=float)
 
     def _get_joint_state(self):
         q = []
         dq = []
         for j in self.arm_joints:
-            js = p.getJointState(self.robot, j)
+            js = self._p.getJointState(self.robot, j)
             q.append(js[0])
             dq.append(js[1])
         return np.array(q, dtype=float), np.array(dq, dtype=float)
 
     def _set_arm_targets(self, q_target):
         for i, j in enumerate(self.arm_joints):
-            p.setJointMotorControl2(
+            self._p.setJointMotorControl2(
                 self.robot, j,
-                p.POSITION_CONTROL,
+                self._p.POSITION_CONTROL,
                 targetPosition=float(q_target[i]),
                 force=50,
                 maxVelocity=1.2,
@@ -227,14 +233,14 @@ class PandaPickReturnEnv(gym.Env):
         # 판다 finger는 각 finger가 절반씩 움직이는 형태라 보통 0~0.04 범위를 줌
         w = float(np.clip(open_width, 0.0, 0.04))
         if self.finger_j1 is not None:
-            p.setJointMotorControl2(self.robot, self.finger_j1, p.POSITION_CONTROL, targetPosition=w, force=30)
+            self._p.setJointMotorControl2(self.robot, self.finger_j1, self._p.POSITION_CONTROL, targetPosition=w, force=30)
         if self.finger_j2 is not None:
-            p.setJointMotorControl2(self.robot, self.finger_j2, p.POSITION_CONTROL, targetPosition=w, force=30)
+            self._p.setJointMotorControl2(self.robot, self.finger_j2, self._p.POSITION_CONTROL, targetPosition=w, force=30)
         self.gripper_open = w
 
     def _robot_collided(self) -> bool:
         for oid in self.obstacle_ids:
-            if p.getContactPoints(bodyA=self.robot, bodyB=oid):
+            if self._p.getContactPoints(bodyA=self.robot, bodyB=oid):
                 return True
         # 테이블이랑도 과격한 접촉하면 패널티 주고 싶으면 여기 추가 가능
         return False
@@ -250,15 +256,15 @@ class PandaPickReturnEnv(gym.Env):
 
         if dist < self.grasp_dist and self.gripper_open < 0.012:
             # 물체를 eef에 fixed constraint로 부착(프로토타입에서 안정적)
-            # parentFramePosition은 eef 기준 약간 앞쪽으로 잡아줌
-            self.attach_cid = p.createConstraint(
+            # eef가 이제 TCP(손가락 끝 사이)이므로 물체 중심을 TCP에 그대로 부착
+            self.attach_cid = self._p.createConstraint(
                 parentBodyUniqueId=self.robot,
                 parentLinkIndex=self.eef_link,
                 childBodyUniqueId=self.obj_id,
                 childLinkIndex=-1,
-                jointType=p.JOINT_FIXED,
+                jointType=self._p.JOINT_FIXED,
                 jointAxis=[0, 0, 0],
-                parentFramePosition=[0.0, 0.0, 0.08],
+                parentFramePosition=[0.0, 0.0, 0.0],
                 childFramePosition=[0.0, 0.0, 0.0],
             )
             self.grasped = True
@@ -287,7 +293,7 @@ class PandaPickReturnEnv(gym.Env):
         # constraint 제거
         if self.attach_cid is not None:
             try:
-                p.removeConstraint(self.attach_cid)
+                self._p.removeConstraint(self.attach_cid)
             except Exception:
                 pass
         self.attach_cid = None
@@ -297,7 +303,7 @@ class PandaPickReturnEnv(gym.Env):
         # 로봇 홈 리셋
         self.target_q = self.home_q.copy()
         for i, j in enumerate(self.arm_joints):
-            p.resetJointState(self.robot, j, float(self.home_q[i]))
+            self._p.resetJointState(self.robot, j, float(self.home_q[i]))
 
         # 그리퍼 open
         self._set_gripper(0.04)
@@ -305,12 +311,12 @@ class PandaPickReturnEnv(gym.Env):
         # 물체 위치는 "고정" 유지 (원하면 미세 랜덤도 가능)
         obj_size = 0.03
         fixed_obj_pos = [0.62, 0.10, self.table_top_z + obj_size]
-        p.resetBasePositionAndOrientation(self.obj_id, fixed_obj_pos, [0, 0, 0, 1])
-        p.resetBaseVelocity(self.obj_id, [0, 0, 0], [0, 0, 0])
+        self._p.resetBasePositionAndOrientation(self.obj_id, fixed_obj_pos, [0, 0, 0, 1])
+        self._p.resetBaseVelocity(self.obj_id, [0, 0, 0], [0, 0, 0])
 
         # 안정화 스텝
         for _ in range(10):
-            p.stepSimulation()
+            self._p.stepSimulation()
 
         info = {}
         return self._obs(), info
@@ -325,7 +331,7 @@ class PandaPickReturnEnv(gym.Env):
 
         # 관절 제한 clamp (URDF joint limit 참고)
         for i, j in enumerate(self.arm_joints):
-            info = p.getJointInfo(self.robot, j)
+            info = self._p.getJointInfo(self.robot, j)
             lo = info[8]
             hi = info[9]
             # hi/lo가 유효하지 않은 경우가 있어 fallback
@@ -341,7 +347,7 @@ class PandaPickReturnEnv(gym.Env):
 
         # 시뮬 진행
         for _ in range(self.substeps):
-            p.stepSimulation()
+            self._p.stepSimulation()
             if self.render_mode == "human":
                 time.sleep(1 / 240)
 
@@ -407,7 +413,7 @@ class PandaPickReturnEnv(gym.Env):
     def close(self):
         try:
             if self.cid is not None:
-                p.disconnect(self.cid)
+                self._p.disconnect()
         except Exception:
             pass
         self.cid = None
@@ -428,10 +434,12 @@ def train(model_path="ppo_panda_pick_return.zip", timesteps=300_000):
         gamma=0.99,
         learning_rate=3e-4,
         ent_coef=0.0,
+        tensorboard_log="./tb_logs",
         clip_range=0.2,
     )
 
-    model.learn(total_timesteps=timesteps)
+    tb_name = os.path.splitext(os.path.basename(model_path))[0]
+    model.learn(total_timesteps=timesteps, tb_log_name=tb_name)
     model.save(model_path)
     env.close()
     print("Saved:", model_path)
