@@ -1,0 +1,6 @@
+reward v1 | return: episode return    114.8 | grasped True, lifted True, success True, steps 112, home error after the lift phase 1.95 rad
+reward v1 | hold  : episode return    666.2 | grasped True, lifted True, success False, steps 250, home error after the lift phase 1.95 rad
+reward v1 | idle  : episode return   -149.4 | grasped False, lifted False, success False, steps 250, home error after the lift phase nan rad
+reward v2 | return: episode return    -20.3 | grasped True, lifted True, success True, steps 112, home error after the lift phase 1.95 rad
+reward v2 | hold  : episode return    -75.3 | grasped True, lifted True, success False, steps 250, home error after the lift phase 1.95 rad
+reward v2 | idle  : episode return   -149.4 | grasped False, lifted False, success False, steps 250, home error after the lift phase nan rad

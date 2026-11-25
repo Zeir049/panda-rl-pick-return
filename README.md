@@ -5,9 +5,9 @@ An early prototype: IK target following with spherical safety margins around obs
 
 All object, goal and obstacle positions are read directly from the simulator. That shortcut is what my follow-up project, [panda-vision-grasp](https://github.com/Zeir049/panda-vision-grasp), removes: there the object is localized from a single RGB-D view.
 
-> **Status.** The first versions of both policies solved 0 / 50 episodes. I traced this to three bugs, fixed them and retrained ([What changed and why](#what-changed-and-why)).
-> **Reaching (DQN)** now succeeds in 7 / 50 episodes with the greedy policy and 30 / 50 with ε = 0.05.
-> **Pick-and-return (PPO)** now grasps and lifts the cube in 25 / 50 stochastic episodes but **never completes the return**, so it is still unsolved.
+> **Status.** The first versions of both policies solved 0 / 50 episodes. I traced this to two simulation bugs and a reward-design flaw, fixed them and retrained ([What changed and why](#what-changed-and-why)).
+> **Reaching (DQN)** succeeds on 50 held-out goals in 10 / 50 episodes with the greedy policy and 29 / 50 with ε = 0.05; a scripted controller reaches 35 / 50.
+> **Pick-and-return (PPO)** grasps and lifts the cube in 35 / 50 stochastic episodes but **never returns home (0 / 50)**, so it is still unsolved.
 
 ## Scene
 
@@ -50,14 +50,14 @@ DQN with `n_envs=4` (each env has its own physics client), buffer 100k, `lr=1e-3
 | Observation (26) | joint angles (7), joint velocities (7), gripper opening (1), TCP position (3), object position (3), TCP − object (3), grasped / lifted flags (2) |
 | Action (8, continuous in [−1, 1]) | joint-target deltas × 0.06 rad (7, clamped to URDF limits), gripper open/close × 0.02 m (1); 20 sim steps per action |
 | Grasp | **Simulated**: when the TCP is within 4.5 cm of the cube center and the gripper command is < 0.012, the cube is attached at the TCP with a fixed constraint (no friction grasp) |
-| Reward | −distance(TCP, object) − 0.01 per step − 0.001‖a‖²; +1.5 per step while grasped, +2.5 per step while lifted (> 10 cm above the table); +0.3 / (1 + ‖q − q_home‖) while grasped and lifted; −3 on contact with an obstacle; +12 on success |
+| Reward (v2, default) | −distance(TCP, object) − 0.01 per step − 0.001‖a‖²; **+5 once** when the grasp happens, **+5 once** on the first lift (> 10 cm above the table); while grasped and lifted, +2 × (decrease of ‖q − q_home‖) since the last step, i.e. pay only for progress toward home; −3 per step in contact with an obstacle; **+50** on success. The old reward is kept as `reward_version="v1"` (see fix 3) |
 | Termination | success = grasped ∧ lifted ∧ ‖q − q_home‖ < 0.25 rad; truncation after 250 steps |
 
 PPO, single env, `n_steps=1024`, `batch_size=256`, `lr=3e-4`, 300k steps.
 
 ## What changed and why
 
-Version names: **v0** = the original code ([commit f377879](https://github.com/Zeir049/panda-rl-pick-return/commit/f377879)); DQN **v1** = fix 1 only; DQN **v2** and PPO **v1** = the current code.
+Version names: **v0** = the original code ([commit f377879](https://github.com/Zeir049/panda-rl-pick-return/commit/f377879)); DQN **v1** = fix 1 only; DQN **v2** = fixes 1 + 2 (current); PPO **v1** = fixes 1 + 2; PPO **v2** = fixes 1 + 2 + 3 (current).
 
 ### Fix 1 — the four DQN environments were secretly one simulation
 
@@ -82,7 +82,7 @@ Version names: **v0** = the original code ([commit f377879](https://github.com/Z
 
 ### Results before / after
 
-All numbers come from `python evaluate.py` over 50 episodes (files in `results/`). The DQN env draws goals from an RNG seeded with 0, so every row uses the same 50 goals. These goals are **not held out**: the training envs use the same seed. "Stochastic" means ε = 0.05 for DQN and sampling from the Gaussian policy for PPO.
+All numbers come from `python evaluate.py` over 50 episodes (files in `results/`). The DQN env draws goals from a seeded RNG. Training used seed 0, so the seed-0 rows below are **not held out**; the held-out row uses seed 1000, which was never used in training. "Stochastic" means ε = 0.05 for DQN and sampling from the Gaussian policy for PPO. Stochastic evaluation is not seeded, so a re-run can differ by an episode or two.
 
 **Reaching (DQN)**
 
@@ -93,10 +93,12 @@ All numbers come from `python evaluate.py` over 50 episodes (files in `results/`
 | v1: own client per env, hand COM | 500k | 0 / 50 | – | 2 / 50 | 7.0 cm |
 | **v2: own client per env, TCP** | 500k | **7 / 50** | **30 / 50** | 0 / 50 | 6.0 cm (ε: 3.4 cm) |
 | *scripted greedy controller (v2 env)* | – | *31 / 50* | – | *1 / 50* | *3.4 cm* |
+| **v2, held-out goals (seed 1000)** | 500k | **10 / 50** | **29 / 50** | 0 / 50 | 5.5 cm (ε: 3.5 cm) |
+| *scripted greedy controller, seed 1000* | – | *35 / 50* | – | *1 / 50* | *3.3 cm* |
 
-Successful greedy episodes take 19.6 steps on average. The 43 failures are all timeouts, not collisions. A likely reason: the action set has no "stay" action, so near the goal a deterministic policy keeps stepping back and forth on the 2 cm grid. A little randomness breaks the loop (ε = 0.05 gives 30 / 50), and the scripted controller is limited the same way (31 / 50). I have not tested this explanation further.
+On held-out goals the policy does about as well as on the training seed (greedy 10 vs 7, ε 29 vs 30), and stays below the scripted controller (35 / 50), so the seed-0 result was not memorization of those 50 goals. Successful greedy episodes take 19.6 steps on average (seed 0). The 43 seed-0 failures are all timeouts, not collisions. A likely reason: the action set has no "stay" action, so near the goal a deterministic policy keeps stepping back and forth on the 2 cm grid. A little randomness breaks the loop (ε = 0.05 gives 30 / 50), and the scripted controller is limited the same way (31 / 50). I have not tested this explanation further.
 
-**Pick-and-return (PPO)**
+**Pick-and-return (PPO)** — results for PPO v2 are under fix 3 below.
 
 | Version | Mode | Grasped | Lifted | Returned home (success) | Touched obstacle |
 |---|---|---|---|---|---|
@@ -106,7 +108,34 @@ Successful greedy episodes take 19.6 steps on average. The 43 failures are all t
 
 The PPO start state is fixed, so the 50 deterministic episodes are identical.
 
-After fix 2 the policy learned to grasp and lift (training mean return −203 → +252, `tb_logs/ppo_v1_300k`), but it never returns home. A likely cause, **not yet tested**, is the reward design: holding the lifted cube pays about +4 per step until the 250-step limit, while returning home pays +12 once and **ends the episode**. Stopping early forfeits the per-step bonus, so the reward never favours returning. I made one bounded training attempt and did not tune further. The next change would be to make the holding bonus small relative to the success bonus, or to pay it only as progress toward home. I have not checked why the deterministic (mean) action never grasps.
+After fix 2 the policy learned to grasp and lift (training mean return −203 → +252, `tb_logs/ppo_v1_300k`), but it never returned home.
+
+### Fix 3 — the PPO reward paid more for holding the cube than for finishing
+
+* **Bug.** The v1 reward paid +1.5 per step while grasped and +2.5 per step while lifted, but only +12 once for success, and success **ends the episode**. Holding the cube in the air until the 250-step limit was therefore worth much more than returning home.
+* **Symptom.** The v1 policy grasped and lifted the cube, then kept holding it: on average it stayed lifted for 126.7 steps, but never moved toward home (`results/eval_ppo_v1_post_lift_stats.txt`).
+* **Check before retraining.** `check_reward_design.py` scores three scripted behaviours under each reward (`results/reward_design_check.txt`):
+
+  | Scripted behaviour | v1 reward | v2 reward |
+  |---|---|---|
+  | grasp → lift → **return home** (success at step 112) | 114.8 | **−20.3** (best) |
+  | grasp → lift → **hold** until step 250 | **666.2** (best) | −75.3 |
+  | idle | −149.4 | −149.4 |
+
+* **Fix (reward v2).** Grasp and lift are each rewarded **once** (+5), not per step. While the cube is held, the reward pays only for **progress toward home**: +2 × the decrease in ‖q − q_home‖, which sums to zero if the arm just holds still. Success pays +50. Everything else (reaching term, step and action penalties, −3 obstacle contact) is unchanged. The old reward remains available as `reward_version="v1"`.
+* **Result (one 300k-step run, same hyper-parameters, `tb_logs/ppo_v2_300k`, `results/eval_ppo_v2.txt`).**
+
+  | Version | Mode | Grasped | Lifted | Returned home (success) | Touched obstacle | Steps spent lifted |
+  |---|---|---|---|---|---|---|
+  | v1 reward | stochastic | 25 / 50 | 25 / 50 | 0 / 50 | 42 / 50 | 126.7 |
+  | **v2 reward** | stochastic | **35 / 50** | **35 / 50** | **0 / 50** | **13 / 50** | 19.1 |
+  | v2 reward | deterministic | 0 / 50 | 0 / 50 | 0 / 50 | 0 / 50 | – |
+
+  The fix removed the incentive to hold: the policy now stays lifted for 19 steps instead of 127. It grasps more often and touches the obstacle far less. **It still never returns home, so PPO pick-and-return remains unsolved.**
+* **Why it still fails (diagnosis, not yet fixed).** The learned policy reaches the cube in an awkward arm posture: on average 4.36 rad from the home pose in joint space at the moment of lift. The scripted grasp is 1.95 rad from home. While lifted, the policy gets no closer than 4.28 rad (success needs < 0.25 rad), and after about 19 steps the cube drops below the lift height. So the return phase was never learned: it is a long joint-space move the policy never discovered in 300k steps.
+  * Possible next steps, not tried: start some episodes with the cube already in hand (a curriculum for the return phase), add ‖q − q_home‖ to the observation, or penalise posture during the grasp.
+  * The deterministic (mean) action still never grasps; I have not investigated why.
+  * I stopped after one bounded run (41 min). I did not tune on the evaluation episodes; the PPO start state is fixed, so they are the same as the training start state.
 
 ## Known issues
 
@@ -118,8 +147,8 @@ After fix 2 the policy learned to grasp and lift (training mean return −203 �
 
 * **Ground-truth state.** Object, goal and obstacle positions come straight from the simulator. [panda-vision-grasp](https://github.com/Zeir049/panda-vision-grasp) replaces this with RGB-D perception and a friction-only grasp.
 * Obstacle handling is a sphere approximation on the end-effector target only, not collision-free motion planning for the whole arm.
-* Fixed scene: one cube position and three fixed obstacles, and the evaluation goals are not held out, so these results say nothing about generalization.
-* PPO pick-and-return is unsolved (see above).
+* Fixed scene: one cube position and three fixed obstacles. DQN is also evaluated on held-out goals, but the obstacles never move, and the PPO start state is the same in training and evaluation, so these results say little about generalization.
+* PPO pick-and-return is unsolved (see fix 3).
 
 ## Run
 
@@ -138,12 +167,14 @@ python panda_pick_return_env.py play                         # GUI rollout of th
 
 python evaluate.py                            # both current models, deterministic
 python evaluate.py --stochastic               # ε = 0.05 (DQN) / sampled actions (PPO)
+python evaluate.py --only dqn --seed 1000     # held-out DQN goals
 python check_grasp_feasibility.py             # scripted grasp-lift-return
-python check_reach_feasibility.py [--link panda_hand]   # scripted greedy reaching
+python check_reach_feasibility.py [--link panda_hand] [--seed 1000]   # scripted greedy reaching
+python check_reward_design.py                 # scripted return vs hold under reward v1 / v2
 tensorboard --logdir tb_logs
 ```
 
-The v0 and DQN v1 checkpoints only match the environment code of their own version. To re-evaluate them, check out that version first (v0: commit f377879; DQN v1: the commit "Fix shared PyBullet client …"). Their result files were produced that way; the model paths inside them were updated after the files moved to `checkpoints/`.
+The v0 and DQN v1 checkpoints only match the environment code of their own version (`checkpoints/ppo_panda_pick_return_v1.zip` still runs in the current env, since only the reward changed). To re-evaluate them, check out that version first (v0: commit f377879; DQN v1: the commit "Fix shared PyBullet client …"). Their result files were produced that way; the model paths inside them were updated after the files moved to `checkpoints/`.
 
 Tested with Python 3.12, PyBullet 3.2.7, Gymnasium 1.2.3, Stable-Baselines3 2.7.1, PyTorch 2.10 (CPU) on Windows 11.
 
@@ -158,8 +189,9 @@ Tested with Python 3.12, PyBullet 3.2.7, Gymnasium 1.2.3, Stable-Baselines3 2.7.
 | `panda_pick_return_env.py` | `PandaPickReturnEnv` + PPO train / play |
 | `evaluate.py` | Headless evaluation of saved models |
 | `check_grasp_feasibility.py`, `check_reach_feasibility.py` | Scripted (non-learning) controllers that test whether each task is solvable |
+| `check_reward_design.py` | Scripted return vs hold vs idle, scored under reward v1 and v2 |
 | `smoke_test.py` | PyBullet install check |
-| `dqn_panda_discrete.zip`, `ppo_panda_pick_return.zip` | Current models (DQN v2, PPO v1) |
-| `checkpoints/` | Earlier models: `*_v0`, DQN `v1_50k`, `v1_500k` |
+| `dqn_panda_discrete.zip`, `ppo_panda_pick_return.zip` | Current models (DQN v2, PPO v2) |
+| `checkpoints/` | Earlier models: `*_v0`, DQN `v1_50k`, `v1_500k`, PPO `v1` |
 | `results/` | Evaluation and feasibility outputs quoted above |
-| `tb_logs/` | TensorBoard logs: `dqn_v0`, `dqn_v1_50k`, `dqn_v1_500k`, `dqn_v2_500k`, `ppo_v1_300k` (no log exists for PPO v0) |
+| `tb_logs/` | TensorBoard logs: `dqn_v0`, `dqn_v1_50k`, `dqn_v1_500k`, `dqn_v2_500k`, `ppo_v1_300k`, `ppo_v2_300k` (no log exists for PPO v0) |

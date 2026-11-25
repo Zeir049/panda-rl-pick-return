@@ -1,0 +1,2 @@
+[PPO pick-return] checkpoints/ppo_panda_pick_return_v1.zip, 50 episodes, stochastic (ever during episode): grasped 25/50, lifted 25/50, collided 42/50, success 0/50, mean steps 250.0 (successful episodes: -), mean final home error 5.64 rad
+    lifted episodes: home error at first lift 5.28 rad, smallest home error while lifted 5.23 rad, steps spent lifted 126.7 (means over 25 episodes; success needs < 0.25 rad)

@@ -76,6 +76,7 @@ class PandaPickReturnEnv(gym.Env):
         success_joint_tol=0.25,      # 홈 복귀 판정(관절 거리)
         grasp_dist=0.045,            # 이 거리 이내 + 그리퍼 닫힘이면 grasp 허용
         lift_height=0.10,            # 상판 대비 이만큼 들면 lift 성공
+        reward_version="v2",         # "v1": 원래 보상(들고 버티기가 복귀보다 이득), "v2": 수정된 보상
         seed=0,
     ):
         super().__init__()
@@ -87,6 +88,9 @@ class PandaPickReturnEnv(gym.Env):
         self.success_joint_tol = float(success_joint_tol)
         self.grasp_dist = float(grasp_dist)
         self.lift_height = float(lift_height)
+        if reward_version not in ("v1", "v2"):
+            raise ValueError("reward_version must be 'v1' or 'v2'")
+        self.reward_version = reward_version
         self.rng = np.random.default_rng(seed)
 
         # action: 7 arm joints + 1 gripper cmd
@@ -299,6 +303,8 @@ class PandaPickReturnEnv(gym.Env):
         self.attach_cid = None
         self.grasped = False
         self.lifted = False
+        self.ever_lifted = False       # v2: lift 보너스는 에피소드당 한 번
+        self.prev_home_err = None      # v2: 홈 방향 진행량(potential) 계산용
 
         # 로봇 홈 리셋
         self.target_q = self.home_q.copy()
@@ -352,6 +358,7 @@ class PandaPickReturnEnv(gym.Env):
                 time.sleep(1 / 240)
 
         # grasp 시도 및 lift 상태 갱신
+        was_grasped = self.grasped
         self._try_grasp_attach()
         self._check_lifted()
 
@@ -365,17 +372,32 @@ class PandaPickReturnEnv(gym.Env):
         reward -= 0.01  # step penalty
         reward -= 0.001 * float(np.sum(np.square(action)))  # action penalty
 
-        # grasp / lift 보상
-        if self.grasped:
-            reward += 1.5
-        if self.lifted:
-            reward += 2.5
-
-        # 홈 복귀 보상(물체 들고 있어야 의미 있음)
         q, _ = self._get_joint_state()
         home_err = float(np.linalg.norm(q - self.home_q))
-        if self.grasped and self.lifted:
-            reward += 0.3 * (1.0 / (1.0 + home_err))  # 홈에 가까울수록 +
+
+        if self.reward_version == "v1":
+            # v1 (원래 보상): grasp/lift 상태에 매 step 보상 -> 들고 버티면 step당 약 +4,
+            # 복귀 성공(+12)은 에피소드를 끝내므로 오히려 손해였음
+            if self.grasped:
+                reward += 1.5
+            if self.lifted:
+                reward += 2.5
+            if self.grasped and self.lifted:
+                reward += 0.3 * (1.0 / (1.0 + home_err))  # 홈에 가까울수록 +
+        else:
+            # v2: grasp/lift는 처음 일어난 순간에 한 번만 보상
+            if self.grasped and not was_grasped:
+                reward += 5.0
+            if self.lifted and not self.ever_lifted:
+                reward += 5.0
+                self.ever_lifted = True
+            # 들고 있는 동안에는 홈 쪽으로 '움직인 만큼'만 보상 (potential 차이, 버티기만 하면 0)
+            if self.grasped and self.lifted:
+                if self.prev_home_err is not None:
+                    reward += 2.0 * (self.prev_home_err - home_err)
+                self.prev_home_err = home_err
+            else:
+                self.prev_home_err = None
 
         # 충돌 패널티
         collided = self._robot_collided()
@@ -389,7 +411,7 @@ class PandaPickReturnEnv(gym.Env):
         truncated = False
 
         if success:
-            reward += 12.0
+            reward += 12.0 if self.reward_version == "v1" else 50.0
             terminated = True
 
         # 충돌이 심각하면 종료하고 싶다면 여기서 terminate 해도 됨
